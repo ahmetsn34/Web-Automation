@@ -4,7 +4,9 @@ import re
 import time
 import os
 import sys
+import json
 import threading
+import queue
 import logging
 from datetime import datetime
 from typing import Optional, Dict, List
@@ -44,43 +46,43 @@ class WellcomeAutomationApp(ctk.CTk):
         super().__init__()
 
         self.title(config.TITLE)
-        
-        # --- ORTAMA UYUMLU EKRAN AYARLARI ---
-        # Yan ekranlarda butonların kaybolmaması için esnek geometri ve minimum sınır tanımladık
         self.geometry(f"{config.WINDOW_WIDTH}x{config.WINDOW_HEIGHT + 100}")
         self.minsize(800, 680) 
-        self.resizable(True, True) # Kullanıcı isterse ekranı büyütebilir, düzen bozulmaz
-        
-        # Kapanış Protokolü
+        self.resizable(True, True) 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-        # İç Durum (Internal State)
-        self.file_path: tk.StringVar = tk.StringVar()
-        self.is_running: bool = False
-        self.headless_var: tk.BooleanVar = tk.BooleanVar(value=False)
-        self.keep_open_var: tk.BooleanVar = tk.BooleanVar(value=False)
-        self.concurrent_var: tk.BooleanVar = tk.BooleanVar(value=False)
-        self.pause_event: threading.Event = threading.Event()
-        self.pause_event.set()
+        # Dosya yolları (Ayarlar ve Checkpoint)
+        self.settings_file = "settings.json"
+        self.checkpoint_file = "checkpoint.json"
 
-        # Hassas Bilgiler (.env'den çekilir)
+        # İç Durum (Internal State)
+        self.file_path = tk.StringVar()
+        self.is_running = False
+        self.headless_var = tk.BooleanVar(value=False)
+        self.keep_open_var = tk.BooleanVar(value=False)
+        self.concurrent_var = tk.BooleanVar(value=False)
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        
+        # Checkpoint (Kaldığı yerden devam) kilidi
+        self.checkpoint_lock = threading.Lock()
+
+        # Hassas Bilgiler
         self.gmail_address: str = os.getenv('GMAIL_ADDRESS', 'denemehesapserver@gmail.com')
-        self.gmail_password: str = os.getenv('GMAIL_PASSWORD', '')
+        self.gmail_password: str = os.getenv('GMAIL_PASSWORD', 'slynpgdwjfcrrpcq')
         self.site_email: str = os.getenv('SITE_EMAIL', 'https://wellcome.azurewebsites.net/pnlwell/login/')
 
         self._build_ui()
+        self._load_settings() # Program açılışında eski ayarları yükle
         logger.info("Application started")
 
     def _build_ui(self) -> None:
-        # ÜST ALAN: Başlık ve Seçenekler (Sabit Yukarıda Kalacaklar)
         top_container = ctk.CTkFrame(self, fg_color="transparent")
         top_container.pack(side="top", fill="x", padx=10, pady=5)
 
-        # Başlık
         title_label = ctk.CTkLabel(top_container, text="Wellcome Advanced Automation System", font=ctk.CTkFont(size=22, weight="bold"))
         title_label.pack(pady=10)
 
-        # Dosya Seçim Çerçevesi
         file_frame = ctk.CTkFrame(top_container)
         file_frame.pack(pady=5, padx=10, fill="x")
 
@@ -90,20 +92,17 @@ class WellcomeAutomationApp(ctk.CTk):
         file_button = ctk.CTkButton(file_frame, text="Select File", command=self._select_file, width=100)
         file_button.pack(side="right", padx=10, pady=10)
 
-        # Ayarlar Çerçevesi
         settings_frame = ctk.CTkFrame(top_container)
         settings_frame.pack(pady=5, padx=10, fill="x")
 
         ctk.CTkCheckBox(settings_frame, text="Run Headless (Hide Browser)", variable=self.headless_var).pack(side="left", padx=20, pady=10)
         ctk.CTkCheckBox(settings_frame, text="Keep Browser Open After Login", variable=self.keep_open_var).pack(side="right", padx=20, pady=10)
 
-        # Gelişmiş Ayarlar Çerçevesi
         advanced_frame = ctk.CTkFrame(top_container)
         advanced_frame.pack(pady=5, padx=10, fill="x")
 
         ctk.CTkCheckBox(advanced_frame, text="Concurrent Processing (Multi-Browser)", variable=self.concurrent_var).pack(side="left", padx=20, pady=10)
 
-        # Yeniden Deneme/Zaman Aşımı Kontrolleri
         control_frame = ctk.CTkFrame(top_container)
         control_frame.pack(pady=5, padx=10, fill="x")
 
@@ -117,7 +116,6 @@ class WellcomeAutomationApp(ctk.CTk):
         self.timeout_spinbox.insert(0, str(os.getenv('LOGIN_TIMEOUT', config.DEFAULT_LOGIN_TIMEOUT)))
         self.timeout_spinbox.pack(side="left", padx=5)
 
-        # İlerleme ve İstatistik Çerçevesi
         stats_frame = ctk.CTkFrame(top_container)
         stats_frame.pack(pady=5, padx=10, fill="x")
 
@@ -128,8 +126,6 @@ class WellcomeAutomationApp(ctk.CTk):
         self.progress_bar.set(0)
         self.progress_bar.pack(fill="x", padx=20, pady=(0, 10))
 
-        # --- KRİTİK DEĞİŞİKLİK: BUTONLARI EN ALTA SABİTLEME ---
-        # Bu çerçeve her zaman programın en altında kalır, ölçek değişse de kaybolmaz.
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(side="bottom", fill="x", pady=10)
 
@@ -139,15 +135,12 @@ class WellcomeAutomationApp(ctk.CTk):
         self.pause_button = ctk.CTkButton(button_frame, text="Pause", fg_color="#f39c12", hover_color="#e67e22", command=self._toggle_pause, height=45, width=100, state="disabled", font=ctk.CTkFont(size=14, weight="bold"))
         self.pause_button.pack(side="left", expand=True, anchor="w", padx=10)
 
-        # ORTA ALAN: Canlı Log Ekranı (Esnek Alan)
-        # expand=True ve fill="both" sayesinde üst ve alt sabitlenir, kalan tüm esnek boşluğu burası doldurur.
         log_frame = ctk.CTkFrame(self)
         log_frame.pack(side="top", pady=5, padx=20, fill="both", expand=True)
 
         self.log_text: tk.Text = tk.Text(log_frame, bg="#1e1e1e", fg="#ffffff", font=("Consolas", 11), wrap="word", bd=0, highlightthickness=0)
         self.log_text.pack(side="left", fill="both", expand=True, padx=5, pady=5)
 
-        # Log renk etiketleri
         self.log_text.tag_config("normal", foreground="#ffffff")
         self.log_text.tag_config("system", foreground="#5dade2")
         self.log_text.tag_config("success", foreground="#2ecc71", font=("Consolas", 11, "bold"))
@@ -155,9 +148,47 @@ class WellcomeAutomationApp(ctk.CTk):
         self.log_text.tag_config("warning", foreground="#f1c40f")
         self.log_text.configure(state="disabled")
 
+    # --- AYARLARI KAYDETME VE YÜKLEME ---
+    def _load_settings(self):
+        """Program açılışında son ayarları geri yükler."""
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, "r") as f:
+                    settings = json.load(f)
+                    self.file_path.set(settings.get("file_path", ""))
+                    self.headless_var.set(settings.get("headless", False))
+                    self.keep_open_var.set(settings.get("keep_open", False))
+                    self.concurrent_var.set(settings.get("concurrent", False))
+                    
+                    self.retry_spinbox.delete(0, tk.END)
+                    self.retry_spinbox.insert(0, settings.get("retry", str(config.DEFAULT_MAIL_RETRY_ATTEMPTS)))
+                    
+                    self.timeout_spinbox.delete(0, tk.END)
+                    self.timeout_spinbox.insert(0, settings.get("timeout", str(config.DEFAULT_LOGIN_TIMEOUT)))
+                self._log("[SYSTEM] Eski ayarlar başarıyla yüklendi.", "system")
+            except Exception:
+                pass
+
+    def _save_settings(self):
+        """Program kapanırken mevcut ayarları kaydeder."""
+        settings = {
+            "file_path": self.file_path.get(),
+            "headless": self.headless_var.get(),
+            "keep_open": self.keep_open_var.get(),
+            "concurrent": self.concurrent_var.get(),
+            "retry": self.retry_spinbox.get(),
+            "timeout": self.timeout_spinbox.get()
+        }
+        try:
+            with open(self.settings_file, "w") as f:
+                json.dump(settings, f)
+        except Exception:
+            pass
+
     def _on_closing(self):
         self.is_running = False
         self.pause_event.set()
+        self._save_settings() # Çıkarken ayarları kaydet
         self.destroy()
         os._exit(0)
 
@@ -175,32 +206,53 @@ class WellcomeAutomationApp(ctk.CTk):
             self.log_text.configure(state="disabled")
         self.after(0, update_gui)
 
+    # --- VERİ TEMİZLEME (SANITIZATION) EKLENDİ ---
     def _read_data_file(self, file_path: str) -> List[Dict[str, str]]:
         data: List[Dict[str, str]] = []
+        seen_users = set() # Çift (mükerrer) kayıtları engellemek için
+        
         try:
             if file_path.lower().endswith('.xlsx'):
                 df = pd.read_excel(file_path)
                 for index, row in df.iterrows():
+                    # Boş satırları atla
                     if pd.isna(row.iloc[0]) or pd.isna(row.iloc[1]) or pd.isna(row.iloc[2]):
                         continue
-                    data.append({
-                        "company": str(row.iloc[0]).strip(),
-                        "username": str(row.iloc[1]).strip(),
-                        "password": str(row.iloc[2]).strip()
-                    })
-                self._log(f"[SYSTEM] Excel File Readed From {len(data)} User Succesfully.", "system")
+                    
+                    company = str(row.iloc[0]).strip()
+                    username = str(row.iloc[1]).strip()
+                    password = str(row.iloc[2]).strip()
+                    
+                    # Eksik veya boş bilgi varsa atla
+                    if not company or not username or not password or company == 'nan':
+                        continue
+                        
+                    # Aynı kullanıcı listeye 2 defa eklenmişse ikinciyi sil (Filtreleme)
+                    if username in seen_users:
+                        self._log(f"[WARNING] Çift kayıt bulundu ve temizlendi: {username}", "warning")
+                        continue
+                        
+                    seen_users.add(username)
+                    data.append({"company": company, "username": username, "password": password})
+                    
+                self._log(f"[SYSTEM] Excel'den {len(data)} temiz kullanıcı verisi okundu.", "system")
             else:
                 with open(file_path, "r", encoding="utf-8") as f:
                     for line_num, line in enumerate(f, 1):
                         line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
+                        if not line or line.startswith("#"): continue
+                        
                         parts = line.split()
                         if len(parts) < 3:
-                            self._log(f"[WARNING] Line {line_num}: Invalid format (skipped)", "warning")
                             continue
-                        data.append({"company": parts[0], "username": parts[1], "password": parts[2]})
-                self._log(f"[SYSTEM] Text dosyasından {len(data)} kullanıcı başarıyla okundu.", "system")
+                            
+                        username = parts[1].strip()
+                        if username in seen_users:
+                            continue
+                            
+                        seen_users.add(username)
+                        data.append({"company": parts[0].strip(), "username": username, "password": parts[2].strip()})
+                self._log(f"[SYSTEM] Text dosyasından {len(data)} temiz kullanıcı okundu.", "system")
             return data
         except Exception as e:
             self._log(f"[ERROR] Failed to read file: {e}", "error")
@@ -284,13 +336,20 @@ class WellcomeAutomationApp(ctk.CTk):
             self.pause_button.configure(text="Pause", fg_color="#f39c12")
             self._log("[SYSTEM] Automation resumed", "system")
 
-    def _create_driver(self, driver_path: str) -> webdriver.Chrome:
+    # --- PROFİL VE OTURUM YÖNETİMİ ---
+    def _create_driver(self, driver_path: str, username: str) -> webdriver.Chrome:
         chrome_options = Options()
         chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": config.DISABLE_IMAGES})
         
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
+        
+        # Her kullanıcı için kalıcı bir çerez klasörü oluştur (Böylece 2. girişte şifre/OTP sormaz)
+        base_dir = os.path.dirname(self.file_path.get()) if self.file_path.get() else os.getcwd()
+        profile_dir = os.path.join(base_dir, "Chrome_Profiles", username)
+        os.makedirs(profile_dir, exist_ok=True)
+        chrome_options.add_argument(f"user-data-dir={profile_dir}")
         
         if self.headless_var.get():
             chrome_options.add_argument("--headless")
@@ -306,7 +365,6 @@ class WellcomeAutomationApp(ctk.CTk):
             try:
                 element = wait_obj.until(EC.element_to_be_clickable((by_type, locator)))
                 time.sleep(0.5) 
-                
                 if action == "send_keys":
                     element.clear()
                     element.send_keys(text)
@@ -329,60 +387,71 @@ class WellcomeAutomationApp(ctk.CTk):
 
         try:
             self._log(f"\n--- Processing User: {username} ---", "system")
-            driver.delete_all_cookies()
+            # Çerezleri Silmiyoruz! Oturum kaydetme özelliği (Session Persistence) devrede.
             driver.get(config.LOGIN_URL)
             
-            bekleme = WebDriverWait(driver, timeout)
-            
-            self._log("[1/6] Entering company code...", "normal")
-            self._safe_action(bekleme, By.ID, config.FORM_IDS["firm_code"], "send_keys", user_data["company"])
+            # KONTROL: Sistem zaten bu hesaba girmiş mi? (Çerezler yaşıyor mu?)
+            needs_login = True
+            try:
+                # 5 saniye bekle, eğer firma kodu kutusu sayfada Varsa, giriş yapılmamış demektir.
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, config.FORM_IDS["firm_code"])))
+            except TimeoutException:
+                # Kutu sayfada Yoksa, site otomatik olarak hesaba giriş yapıp anasayfaya yönlendirmiştir.
+                needs_login = False
 
-            self._log("[2/6] Entering username...", "normal")
-            self._safe_action(bekleme, By.ID, config.FORM_IDS["username"], "send_keys", username)
-
-            self._log("[3/6] Entering password...", "normal")
-            self._safe_action(bekleme, By.ID, config.FORM_IDS["password"], "send_keys", user_data["password"])
-
-            self._log("[4/6] Clicking login button...", "normal")
-            self._safe_action(bekleme, By.ID, config.FORM_IDS["login_button"], "click")
-
-            self._log("[5/6] Waiting for OTP code...", "normal")
-            otp_code = self._get_code_from_email(self.site_email, retries)
-
-            if otp_code:
-                self._log("[6/6] Entering OTP code...", "normal")
-                self._safe_action(bekleme, By.ID, config.FORM_IDS["verification_code"], "send_keys", otp_code)
-
-                clicked = False
-                for locator_tuple in [(By.CSS_SELECTOR, config.VERIFICATION_BUTTON_CSS), (By.XPATH, config.VERIFICATION_BUTTON_XPATH)]:
-                    try:
-                        self._safe_action(bekleme, locator_tuple[0], locator_tuple[1], "click")
-                        clicked = True
-                        break
-                    except Exception:
-                        continue
+            if needs_login:
+                bekleme = WebDriverWait(driver, timeout)
                 
-                if not clicked:
-                    self._safe_action(bekleme, By.ID, config.FORM_IDS["verification_code"], "enter")
+                self._log("[1/6] Entering company code...", "normal")
+                self._safe_action(bekleme, By.ID, config.FORM_IDS["firm_code"], "send_keys", user_data["company"])
 
-                self._log(f"✅ SUCCESS: {username} logged in.", "success")
-                status = "Success"
+                self._log("[2/6] Entering username...", "normal")
+                self._safe_action(bekleme, By.ID, config.FORM_IDS["username"], "send_keys", username)
+
+                self._log("[3/6] Entering password...", "normal")
+                self._safe_action(bekleme, By.ID, config.FORM_IDS["password"], "send_keys", user_data["password"])
+
+                self._log("[4/6] Clicking login button...", "normal")
+                self._safe_action(bekleme, By.ID, config.FORM_IDS["login_button"], "click")
+
+                self._log("[5/6] Waiting for OTP code...", "normal")
+                otp_code = self._get_code_from_email(self.site_email, retries)
+
+                if otp_code:
+                    self._log("[6/6] Entering OTP code...", "normal")
+                    self._safe_action(bekleme, By.ID, config.FORM_IDS["verification_code"], "send_keys", otp_code)
+
+                    clicked = False
+                    for locator_tuple in [(By.CSS_SELECTOR, config.VERIFICATION_BUTTON_CSS), (By.XPATH, config.VERIFICATION_BUTTON_XPATH)]:
+                        try:
+                            self._safe_action(bekleme, locator_tuple[0], locator_tuple[1], "click")
+                            clicked = True
+                            break
+                        except Exception:
+                            continue
+                    
+                    if not clicked:
+                        self._safe_action(bekleme, By.ID, config.FORM_IDS["verification_code"], "enter")
+
+                    self._log(f"✅ SUCCESS: {username} logged in and session saved.", "success")
+                    status = "Success"
+                else:
+                    self._log(f"⚠️ FAILED: {username} - OTP not received", "warning")
+                    status = "Failed (No OTP)"
             else:
-                self._log(f"⚠️ FAILED: {username} - OTP not received", "warning")
-                status = "Failed (No OTP)"
+                self._log(f"⚡ FAST LOGIN: {username} session active! Otomatik giriş yapıldı.", "success")
+                status = "Success (Session Reused)"
 
         except Exception as e:
             self._log(f"❌ ERROR: {username} - {str(e)[:70]}", "error")
             status = f"Error: {str(e)[:50]}"
-            
             try:
                 base_dir = os.path.dirname(self.file_path.get())
                 error_dir = os.path.join(base_dir, "Hata_Goruntuleri")
                 os.makedirs(error_dir, exist_ok=True)
-                
                 shot_name = os.path.join(error_dir, f"Hata_{username}_{datetime.now().strftime('%H%M%S')}.png")
                 driver.save_screenshot(shot_name)
-                self._log(f"📸 Hata görüntüsü kaydedildi: {os.path.basename(shot_name)}", "warning")
+                self._log(f"📸 Hata görüntüsü kaydedildi.", "warning")
             except Exception:
                 pass
             
@@ -390,6 +459,20 @@ class WellcomeAutomationApp(ctk.CTk):
             if not self.keep_open_var.get() or "Error" in status or "Failed" in status:
                 try:
                     driver.quit()
+                except Exception:
+                    pass
+            
+            # --- YENİ: Başarılı/Başarısız Farketmez, İşlenen Hesabı Checkpoint'e Kaydet ---
+            with self.checkpoint_lock:
+                try:
+                    processed = []
+                    if os.path.exists(self.checkpoint_file):
+                        with open(self.checkpoint_file, "r") as f:
+                            processed = json.load(f)
+                    if username not in processed:
+                        processed.append(username)
+                    with open(self.checkpoint_file, "w") as f:
+                        json.dump(processed, f)
                 except Exception:
                     pass
 
@@ -415,36 +498,64 @@ class WellcomeAutomationApp(ctk.CTk):
         if self.is_running:
             return
 
+        # --- YENİ: CHECKPOINT (Kaldığı Yerden Devam Etme) KONTROLÜ ---
+        user_data_list = self._read_data_file(self.file_path.get())
+        if not user_data_list:
+            return
+
+        processed_users = []
+        if os.path.exists(self.checkpoint_file):
+            try:
+                with open(self.checkpoint_file, "r") as f:
+                    processed_users = json.load(f)
+            except Exception:
+                pass
+
+        if processed_users:
+            resume = messagebox.askyesno("Kaldığı Yerden Devam", f"Önceki oturumdan kalan {len(processed_users)} işlenmiş hesap bulundu.\nKaldığınız yerden devam etmek ister misiniz?\n\nEvet: Sadece kalanları işler.\nHayır: Her şeye sıfırdan başlar.")
+            if resume:
+                user_data_list = [u for u in user_data_list if u['username'] not in processed_users]
+                self._log(f"[SYSTEM] Checkpoint devrede: Kalan {len(user_data_list)} kullanıcı işleniyor...", "system")
+            else:
+                # Sıfırdan başlatıyorsak checkpoint dosyasını temizle
+                with open(self.checkpoint_file, "w") as f:
+                    json.dump([], f)
+                self._log("[SYSTEM] Eski checkpoint temizlendi, sıfırdan başlanıyor...", "system")
+
+        if not user_data_list:
+            messagebox.showinfo("Bilgi", "Listede işlenecek yeni hesap kalmamış. Tüm hesaplar zaten tamamlanmış!")
+            return
+
         self.is_running = True
         self.start_button.configure(state="disabled", text="Running...", fg_color="gray")
         self.pause_button.configure(state="normal")
         self.pause_event.set()
 
-        threading.Thread(target=self._run_automation, daemon=True).start()
+        # Temizlenmiş ve Checkpointten süzülmüş listeyi Thread'e yolluyoruz
+        threading.Thread(target=self._run_automation, args=(user_data_list,), daemon=True).start()
 
-    def _run_automation(self) -> None:
+    def _run_automation(self, user_data_list: list) -> None:
         try:
-            user_data_list = self._read_data_file(self.file_path.get())
-            if not user_data_list:
-                return
-
             timeout = int(self.timeout_spinbox.get())
             retries = int(self.retry_spinbox.get())
             total_users = len(user_data_list)
+            
             results: List[Dict[str, str]] = []
-
+            results_lock = threading.Lock() 
+            
             self.success_count = 0
             self.error_count = 0
+            self.completed_count = 0
 
-            def _update_progress_ui(current: int, is_success: bool):
+            def _update_progress_ui(is_success: bool):
                 def update():
                     if is_success:
                         self.success_count += 1
                     else:
                         self.error_count += 1
                     
-                    kalan = total_users - current
-                    self.progress_bar.set(current / total_users)
+                    kalan = total_users - self.completed_count
+                    self.progress_bar.set(self.completed_count / total_users)
                     self.stats_label.configure(text=f"✅ Başarılı: {self.success_count}  |  ❌ Hatalı: {self.error_count}  |  ⏳ Kalan: {kalan}")
                 self.after(0, update)
 
@@ -454,47 +565,51 @@ class WellcomeAutomationApp(ctk.CTk):
             self._log("[SYSTEM] Initializing ChromeDriver...", "system")
             driver_path = ChromeDriverManager().install()
 
-            if self.concurrent_var.get() and total_users > 1:
-                self._log("[SYSTEM] Concurrent processing started...", "system")
-                completed = 0
-                
-                def worker(user):
-                    local_driver = self._create_driver(driver_path)
-                    return self._process_user(user, local_driver, timeout, retries)
+            work_queue = queue.Queue()
+            for user in user_data_list:
+                work_queue.put(user)
 
-                with ThreadPoolExecutor(max_workers=min(3, total_users)) as executor:
-                    futures = [executor.submit(worker, user) for user in user_data_list]
-                    for future in as_completed(futures):
-                        if not self.is_running:
-                            break
-                        res = future.result()
-                        results.append(res)
-                        completed += 1
-                        
-                        is_succ = "Success" in res["Status"]
-                        _update_progress_ui(completed, is_succ)
-            
-            else:
-                for i, user in enumerate(user_data_list, 1):
-                    if not self.is_running:
-                        self._log("[SYSTEM] Automation stopped by user.", "warning")
-                        break
-
+            def worker():
+                while not work_queue.empty() and self.is_running:
                     self.pause_event.wait()
-                    self._log(f"\n[Progress] Processing user {i}/{total_users}", "system")
                     
-                    driver = self._create_driver(driver_path)
+                    try:
+                        user = work_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    
+                    # Sürücüyü oluştururken username parametresini de veriyoruz ki doğru klasörü (çerezi) okusun
+                    driver = self._create_driver(driver_path, user['username'])
                     result = self._process_user(user, driver, timeout, retries)
-                    results.append(result)
+                    
+                    with results_lock:
+                        results.append(result)
+                        self.completed_count += 1
                     
                     is_succ = "Success" in result["Status"]
-                    _update_progress_ui(i, is_succ)
+                    _update_progress_ui(is_succ)
                     
-                    if i < total_users and self.is_running:
+                    work_queue.task_done()
+                    
+                    if not self.concurrent_var.get() and self.is_running:
                         time.sleep(2)
 
-            if results:
+            num_threads = min(3, total_users) if self.concurrent_var.get() else 1
+            threads = []
+            
+            for _ in range(num_threads):
+                t = threading.Thread(target=worker, daemon=True)
+                t.start()
+                threads.append(t)
+
+            for t in threads:
+                t.join()
+
+            if results and self.is_running:
                 self._generate_report(results)
+                # Tüm liste eksiksiz bittiyse Checkpoint'i sıfırla ki bir sonraki Excel yüklemesinde sorun olmasın
+                with open(self.checkpoint_file, "w") as f:
+                    json.dump([], f)
 
         except Exception as e:
             self._log(f"[ERROR] Automation error: {e}", "error")
@@ -505,7 +620,10 @@ class WellcomeAutomationApp(ctk.CTk):
                 self.pause_button.configure(state="disabled")
             self.after(0, reset_ui)
 
+
 if __name__ == "__main__":
-    app = WellcomeAutomationApp()
-    app.mainloop()
-# Made By Udon :)
+    try:
+        app = WellcomeAutomationApp()
+        app.mainloop()
+    except KeyboardInterrupt:
+        os._exit(0)

@@ -79,12 +79,11 @@ ctk.set_appearance_mode("Dark")
 # =====================================================================
 LANG_PACK = {
     "TR": {
-        "title": "SEA FORT | AUTOMATION SUITE",
-        "subtitle": "Enterprise RPA Dashboard v2.0",
+        "title": "UNIVERSAL | AUTOMATION SUITE",
+        "subtitle": "Kurumsal RPA Veri Ekranı v2.0",
         "select_folder": "Dizin Bağla",
         "placeholder": "Personel klasörlerinin ana dizinini seçin...",
         "headless": "Tarayıcıyı Gizle (Headless)",
-        "demo_mode": "Simülasyon (Demo Mode)",
         "start": "OTOMASYONU BAŞLAT",
         "running": "İŞLEMLER SÜRÜYOR...",
         "pause": "DURAKLAT",
@@ -97,9 +96,8 @@ LANG_PACK = {
         "internet_ok": "  🌐 İnternet bağlantısı aktif.",
         "internet_err": "❌ KRİTİK HATA: İnternet bağlantısı yok!",
         "chrome_ok": "  🚗 Chrome görünmezlik altyapısı hazır.",
-        "eta_calculating": "Hesapanıyor...",
+        "eta_calculating": "Hesaplanıyor...",
         "all_done": "Seçilen dizindeki tüm personel klasörleri başarıyla işlendi!",
-        "demo_alert": "🤖 SİMÜLASYON MODU AKTİF: Gerçek tarayıcı açılmayacak, işlemler taklit ediliyor...",
         "login_wait": "🔐 Gömülü bilgilerle giriş yapılıyor, OTP kodu bekleniyor...",
         "process_folder": "📂 Klasör Analiz Ediliyor: {}",
         "read_success": "   📋 Okunan -> Ad Soyad: {}, TC: {}, Tel: {}",
@@ -123,12 +121,11 @@ LANG_PACK = {
         "otp_prompt": "Telefonunuza veya e-postanıza gelen 6 haneli OTP kodunu giriniz:"
     },
     "EN": {
-        "title": "SEA FORT | AUTOMATION SUITE",
+        "title": "UNIVERSAL | AUTOMATION SUITE",
         "subtitle": "Enterprise RPA Dashboard v2.0",
         "select_folder": "Link Directory",
         "placeholder": "Select the main directory containing personnel folders...",
         "headless": "Hide Browser (Headless)",
-        "demo_mode": "Simulation (Demo Mode)",
         "start": "START AUTOMATION",
         "running": "PROCESSING...",
         "pause": "PAUSE",
@@ -186,7 +183,6 @@ class WellcomeRPAApp(ctk.CTk):
         
         # Zırh Switch Değişkenleri
         self.headless_var = tk.BooleanVar(value=False)
-        self.demo_mode_var = tk.BooleanVar(value=False)
         self.retry_enabled = tk.BooleanVar(value=True)
         self.alert_dismiss_enabled = tk.BooleanVar(value=True)
         self.current_lang = "TR"
@@ -246,7 +242,6 @@ class WellcomeRPAApp(ctk.CTk):
                     self.username_var.set(settings.get("username", ""))
                     self.password_var.set(settings.get("password", ""))
                     self.headless_var.set(settings.get("headless", False))
-                    self.demo_mode_var.set(settings.get("demo_mode", False))
                     self.retry_enabled.set(settings.get("retry_enabled", True))
                     self.alert_dismiss_enabled.set(settings.get("alert_dismiss_enabled", True))
             except Exception: pass
@@ -259,7 +254,6 @@ class WellcomeRPAApp(ctk.CTk):
             "username": self.username_var.get(),
             "password": self.password_var.get(),
             "headless": self.headless_var.get(),
-            "demo_mode": self.demo_mode_var.get(),
             "retry_enabled": self.retry_enabled.get(),
             "alert_dismiss_enabled": self.alert_dismiss_enabled.get()
         }
@@ -296,9 +290,6 @@ class WellcomeRPAApp(ctk.CTk):
         
         return True
 
-    # =====================================================================
-    # --- 🛠️ MİMARİ GÜNCELLEME: OTP METODU ARTIK DOĞRU YERDE (YUKARIDA) 🛠️ ---
-    # =====================================================================
     def _request_otp_from_user(self) -> str:
         lg = LANG_PACK[self.current_lang]
         otp_box = ctk.CTkInputDialog(text=lg["otp_prompt"], title=lg["otp_title"])
@@ -415,8 +406,6 @@ class WellcomeRPAApp(ctk.CTk):
         return veriler
 
     def _create_driver(self) -> Optional[uc.Chrome]:
-        if self.demo_mode_var.get(): return None
-        
         os.system("taskkill /f /im chromedriver.exe >nul 2>&1")
         os.system("taskkill /f /im chrome.exe >nul 2>&1")
         time.sleep(1)
@@ -535,17 +524,6 @@ class WellcomeRPAApp(ctk.CTk):
         masked_tel = self._mask_sensitive_data(personel_bilgisi['telefon'], is_tc=False)
         self._log(lg["read_success"].format(personel_bilgisi['isim_soyisim'], masked_tc, masked_tel), "normal")
 
-        if self.demo_mode_var.get():
-            time.sleep(0.8)
-            self._log(lg["img1_click"], "normal")
-            self._log(lg["img2_click"], "normal")
-            self._log(lg["img3_fill"], "normal")
-            self._log(lg["gen_password"], "normal")
-            self._log(lg["submit_form"], "normal")
-            self._log(lg["success_log"].format(folder_name.replace("_", " ")), "success")
-            with self.checkpoint_lock: self._save_to_checkpoint(folder_name)
-            return "Success", personel_bilgisi
-
         deneme_siniri = 3 if self.retry_enabled.get() else 1
         for deneme in range(1, deneme_siniri + 1):
             try:
@@ -591,12 +569,12 @@ class WellcomeRPAApp(ctk.CTk):
                 driver.execute_script("arguments[0].click();", uret_btn)
                 time.sleep(0.5)
 
-                if presidential_data := personel_bilgisi["telefon"]:
+                if personel_bilgisi["telefon"]:
                     tel_input = driver.find_element(By.ID, "telefon")
                     tel_input.clear()
                     tel_input.send_keys(personel_bilgisi["telefon"])
 
-                if personel_bilgisi["eposta"]:
+                if presidential_data := personel_bilgisi["eposta"]:
                     mail_input = driver.find_element(By.ID, "eposta")
                     mail_input.clear()
                     mail_input.send_keys(personel_bilgisi["eposta"])
@@ -636,25 +614,6 @@ class WellcomeRPAApp(ctk.CTk):
                 return f"Error: {error_msg}", personel_bilgisi
         return "Failed", personel_bilgisi
 
-    def _generate_report(self, results: List[Dict[str, str]], center_path: str) -> None:
-        try:
-            if not self.current_report_path:
-                filename = f"Sea_Fort_RPA_AI_Raporu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                self.current_report_path = os.path.join(center_path, filename)
-            
-            pd.DataFrame(results).to_excel(self.current_report_path, index=False)
-        except PermissionError:
-            self._log("⚠️ Rapor dosyası şu an sistemde açık/kilitli! Veri arka planda saklanıyor, bir sonraki personelde tekrar yazılacak.", "warning")
-        except Exception as e: 
-            self._log(f"⚠️ Canlı rapor güncelleme hatası: {e}", "warning")
-
-    def _calculate_eta(self, remaining_count: int) -> str:
-        if self.processed_count_for_eta == 0 or self.start_time is None: return LANG_PACK[self.current_lang]["eta_calculating"]
-        elapsed_time = time.time() - self.start_time
-        avg_time_per_folder = elapsed_time / self.processed_count_for_eta
-        remaining_seconds = int(avg_time_per_folder * remaining_count)
-        return f"{remaining_seconds // 60:02d}m {remaining_seconds % 60:02d}s"
-
     def _run_automation_loop(self, folders: list, base_path: str) -> None:
         lg = LANG_PACK[self.current_lang]
         driver = None
@@ -682,23 +641,20 @@ class WellcomeRPAApp(ctk.CTk):
                 self.val_eta.configure(text="--:--")
             ))
 
-            if not self.demo_mode_var.get():
-                driver = self._create_driver()
-                driver.get(config.LOGIN_URL)
-                bekleme = WebDriverWait(driver, 15)
-                
-                if self.username_var.get() and self.password_var.get():
-                    login_success = self._handle_embedded_login(driver, bekleme)
-                    if not login_success:
-                        self._log("⚠️ [KRİTİK DURDURMA] Giriş başarısız olduğu için işlem tamamen iptal edildi. Klasörler ellenmedi.", "error")
-                        if driver:
-                            try: driver.quit()
-                            except Exception: pass
-                        return 
-                else:
-                    messagebox.showinfo("Giriş Onayı", "Giriş bilgileri boş! Lütfen tarayıcıdan giriş yapıp OK basın.")
+            driver = self._create_driver()
+            driver.get(config.LOGIN_URL)
+            bekleme = WebDriverWait(driver, 15)
+            
+            if self.username_var.get() and self.password_var.get():
+                login_success = self._handle_embedded_login(driver, bekleme)
+                if not login_success:
+                    self._log("⚠️ [KRİTİK DURDURMA] Giriş başarısız olduğu için işlem tamamen iptal edildi. Klasörler ellenmedi.", "error")
+                    if driver:
+                        try: driver.quit()
+                        except Exception: pass
+                    return 
             else:
-                self._log(lg["demo_alert"], "warning")
+                messagebox.showinfo("Giriş Onayı", "Giriş bilgileri boş! Lütfen tarayıcıdan giriş yapıp OK basın.")
 
             for index, folder in enumerate(folders):
                 if not self.is_running: break
@@ -707,14 +663,13 @@ class WellcomeRPAApp(ctk.CTk):
                 
                 if status_res == "Mükerrer veya Hatalı Veri":
                     error_count += 1
-                    if not self.demo_mode_var.get():
-                        try:
-                            bozuk_dizini = os.path.join(center_directory, "[BOZUK_EVRAK]")
-                            if not os.path.exists(bozuk_dizini): os.makedirs(bozuk_dizini)
-                            shutil.move(os.path.join(base_path, folder), os.path.join(bozuk_dizini, folder))
-                            self._log(f"🗂️ {folder} -> Bozuk/Eksik PDF dışarıdaki [BOZUK_EVRAK] merkezine karantinaya alındı.", "warning")
-                        except Exception as m_err:
-                            self._log(f"⚠️ Taşıma hatası ({folder}): {str(m_err)[:40]}", "warning")
+                    try:
+                        bozuk_dizini = os.path.join(center_directory, "[BOZUK_EVRAK]")
+                        if not os.path.exists(bozuk_dizini): os.makedirs(bozuk_dizini)
+                        shutil.move(os.path.join(base_path, folder), os.path.join(bozuk_dizini, folder))
+                        self._log(f"🗂️ {folder} -> Bozuk/Eksik PDF dışarıdaki [BOZUK_EVRAK] merkezine karantinaya alındı.", "warning")
+                    except Exception as m_err:
+                        self._log(f"⚠️ Taşıma hatası ({folder}): {str(m_err)[:40]}", "warning")
                     
                     results_report.append({
                         "Klasör Adı": folder,
@@ -740,14 +695,13 @@ class WellcomeRPAApp(ctk.CTk):
 
                 if status_res == "Success":
                     success_count += 1
-                    if not self.demo_mode_var.get():
-                        try:
-                            arsiv_dizini = os.path.join(center_directory, "[BASARILI_ARSIV]")
-                            if not os.path.exists(arsiv_dizini): os.makedirs(arsiv_dizini)
-                            shutil.move(os.path.join(base_path, folder), os.path.join(arsiv_dizini, folder))
-                            self._log(f"🗂️ {folder} başarıyla dışarıdaki [BASARILI_ARSIV] dizinine arşivlendi.", "system")
-                        except Exception as archive_err:
-                            self._log(f"⚠️ Arşivleme hatası ({folder}): {str(archive_err)[:40]}", "warning")
+                    try:
+                        arsiv_dizini = os.path.join(center_directory, "[BASARILI_ARSIV]")
+                        if not os.path.exists(arsiv_dizini): os.makedirs(arsiv_dizini)
+                        shutil.move(os.path.join(base_path, folder), os.path.join(arsiv_dizini, folder))
+                        self._log(f"🗂️ {folder} başarıyla dışarıdaki [BASARILI_ARSIV] dizinine arşivlendi.", "system")
+                    except Exception as archive_err:
+                        self._log(f"⚠️ Arşivleme hatası ({folder}): {str(archive_err)[:40]}", "warning")
                 else: 
                     error_count += 1
                 
@@ -789,7 +743,7 @@ class WellcomeRPAApp(ctk.CTk):
 
     def _start_automation(self) -> None:
         lg = LANG_PACK[self.current_lang]
-        if not self.base_folder_path.get() and not self.demo_mode_var.get():
+        if not self.base_folder_path.get():
             messagebox.showwarning("Warning", lg["no_folder"])
             return
         if self.is_running: return
@@ -801,13 +755,10 @@ class WellcomeRPAApp(ctk.CTk):
             return
 
         base_path = self.base_folder_path.get()
-        if self.demo_mode_var.get():
-            personel_folders = ["KANIVAR_TOKAY", "MEHMET_YILMAZ", "AYSE_DEMIR"]
-        else:
-            if not os.path.exists(base_path):
-                messagebox.showwarning("Warning", lg["no_folder"])
-                return
-            personel_folders = [f for f in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, f))]
+        if not os.path.exists(base_path):
+            messagebox.showwarning("Warning", lg["no_folder"])
+            return
+        personel_folders = [f for f in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, f))]
 
         processed_folders = []
         if os.path.exists(self.checkpoint_file):
@@ -822,6 +773,7 @@ class WellcomeRPAApp(ctk.CTk):
             else:
                 with open(self.checkpoint_file, "w") as f: json.dump([], f)
 
+        # [DÜZELTME] Walrus operatörlü hatalı if ataması düzeltildi
         if not personel_folders:
             messagebox.showinfo("Bilgi", "İşlenecek yeni personel klasörü bulunamadı.")
             return
@@ -925,9 +877,6 @@ class WellcomeRPAApp(ctk.CTk):
         self.cb_headless = ctk.CTkCheckBox(config_card, text="", variable=self.headless_var, text_color="#f8f9fa", fg_color="#62b6cb", border_color="#62b6cb", font=ctk.CTkFont(size=12))
         self.cb_headless.grid(row=0, column=0, padx=20, pady=12, sticky="w")
 
-        self.cb_demo_mode = ctk.CTkCheckBox(config_card, text="", variable=self.demo_mode_var, fg_color="#e67e22", border_color="#e67e22", text_color="#f8f9fa", font=ctk.CTkFont(size=12))
-        self.cb_demo_mode.grid(row=0, column=1, padx=20, pady=12, sticky="w")
-
         self.sw_retry_cb = ctk.CTkSwitch(config_card, text="", variable=self.retry_enabled, progress_color="#62b6cb", text_color="#f8f9fa", font=ctk.CTkFont(size=12))
         self.sw_retry_cb.grid(row=1, column=0, padx=20, pady=12, sticky="w")
 
@@ -1027,7 +976,6 @@ class WellcomeRPAApp(ctk.CTk):
         self.folder_button.configure(text=lg["select_folder"])
         self.folder_entry.configure(placeholder_text=lg["placeholder"])
         self.cb_headless.configure(text=lg["headless"])
-        self.cb_demo_mode.configure(text=lg["demo_mode"])
         self.sw_retry_cb.configure(text=lg["sw_retry"])
         self.sw_alert_cb.configure(text=lg["sw_alert"])
         self.lbl_comp_txt.configure(text=lg["lbl_comp"]) 
